@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, errText, inTauri, type Device, type StepUpdate } from "./backend";
+import { api, errDetails, errText, inTauri, type Device, type StepUpdate, type TfaParams } from "./backend";
 import { dict, type Key, type Lang } from "./i18n";
 
 const STEPS = ["login", "download", "install", "pairing", "open", "finish"] as const;
@@ -16,17 +16,21 @@ export default function App() {
   const [email, setEmail] = useState(""); const [pw, setPw] = useState(""); const [showPw, setShowPw] = useState(false);
   const [phase, setPhase] = useState<Phase>("idle");
   const [step, setStep] = useState(0); const [msg, setMsg] = useState("");
-  const [tfa, setTfa] = useState(false); const [code, setCode] = useState("");
+  const [tfa, setTfa] = useState(false); const [tfaP, setTfaP] = useState<TfaParams>({}); const [code, setCode] = useState("");
   const [pairMsg, setPairMsg] = useState("");
   const [certs, setCerts] = useState<any[] | null>(null); const [pick, setPick] = useState<string[]>([]);
   const [source, setSource] = useState<"latest" | "local">("latest"); const [local, setLocal] = useState<{ token: string; name: string } | null>(null); const [installedLocal, setInstalledLocal] = useState(false);
+  const [account, setAccount] = useState<string | null>(null); const [signing, setSigning] = useState(false); const [detail, setDetail] = useState(""); const [detailShow, setDetailShow] = useState(""); const [copied, setCopied] = useState(false);
   const [warn, setWarn] = useState(""); const [selErr, setSelErr] = useState("");
   const emailRef = useRef(""); const pwRef = useRef("");
   emailRef.current = email; pwRef.current = pw;
+  const mask = (s: string) => { for (const x of [pwRef.current, emailRef.current]) if (x) s = s.split(x).join("***"); return s; };
   const safe = (e: unknown) => { let m = errText(e) || t("failed"); for (const s of [pwRef.current, emailRef.current]) if (s) m = m.split(s).join("***"); return m; };
+  const accountRef = useRef<string | null>(null); accountRef.current = account;
   const unsub = useRef<Array<() => void>>([]);
 
-  const busy = phase === "running" || phase === "finishing" || phase === "open" || phase === "done";
+  const busy0 = phase === "running" || phase === "finishing" || phase === "open" || phase === "done";
+  const busy = busy0 || signing;
   const isLocal = source === "local";
   const steps: readonly string[] = isLocal ? LOCAL_STEPS : STEPS;
   const busyRef = useRef(busy); busyRef.current = busy;
@@ -51,27 +55,41 @@ export default function App() {
 
   const clearSecrets = () => { setPw(""); setCode(""); };
   const pickIpa = async () => { setLocal(null); try { const r = await api.chooseLocalIpa(); setLocal(r); } catch (e) { setMsg(safe(e)); setPhase("error"); } };
-  const fail = (e: unknown) => { setMsg(safe(e)); setPhase("error"); setTfa(false); setCerts(null); clearSecrets(); };
+  const fail = (e: unknown) => { const m = safe(e); const dt = mask(errDetails(e)); setDetail(dt ? m + "\n" + dt : m); setDetailShow(dt); setCopied(false); setMsg(m); setPhase("error"); setTfa(false); setCerts(null); setCode(""); if (!accountRef.current) setPw(""); };
 
-  const start = async () => {
+  const subscribe = async () => {
+    unsub.current.forEach((f) => f()); unsub.current = [];
+    unsub.current = [await api.onTwoFactor((p) => { setTfaP(p ?? {}); setTfa(true); }), await api.onMaxCerts((c) => { const ok = (Array.isArray(c) ? c : []).filter((x: any) => typeof x?.serialNumber === "string" && x.serialNumber); if (!ok.length) { api.answerCerts(null); return; } setPick([]); setCerts(ok); })];
+  };
+  const signIn = async () => {
+    if (busy) return;
     if (!email || !pw) { setMsg(t("needFields")); setPhase("error"); return; }
+    setMsg(""); setPhase("idle"); setSigning(true);
+    try { await subscribe(); await api.login(email, pw); setAccount((await api.loggedInAs()) || email); setCode(""); }
+    catch (e) { fail(e); } finally { setSigning(false); }
+  };
+  const signOut = async () => { if (busy) return; try { await api.signOut(); } catch { /* ignore */ } setAccount(null); setEmail(""); clearSecrets(); setPhase("idle"); setMsg(""); setDetail(""); setDetailShow(""); };
+  const copyErr = async () => { try { await api.copyDetails(detail || msg); setCopied(true); } catch { setCopied(false); } };
+  const start = async () => {
+    if (!account) { setMsg(t("needSignin")); setPhase("error"); return; }
     if (!sel) { setMsg(t("needDevice")); setPhase("error"); return; }
     if (isLocal && !local) { setMsg(t("needIpa")); setPhase("error"); return; }
-    setMsg(""); setPhase("running"); setStep(0);
+    setMsg(""); setPhase("running"); setStep(1);
     unsub.current.forEach((f) => f()); unsub.current = [];
     try {
-    unsub.current = [await api.onTwoFactor(() => setTfa(true)), await api.onMaxCerts((c) => { const ok = (Array.isArray(c) ? c : []).filter((x: any) => typeof x?.serialNumber === "string" && x.serialNumber); if (!ok.length) { api.answerCerts(null); return; } setPick([]); setCerts(ok); }),
+    await subscribe();
+    unsub.current.push(
       await api.onOperation(isLocal ? "install_local" : "install_mirsa", (u: StepUpdate) => {
         const i = steps.indexOf(u.stepId);
         if (u.updateType === "failed") fail(u.extraDetails ?? t("failed"));
-        else if (i >= 0) setStep(u.updateType === "finished" ? i + 1 : i);
-      })];
-      await api.login(email, pw); setCode(""); setStep(1);
-      if (isLocal) { await api.installLocal(local!.token); clearSecrets(); setInstalledLocal(true); setLocal(null); setStep(LOCAL_STEPS.length); setPhase("done"); }
+        else if (i >= 1) setStep(u.updateType === "finished" ? i + 1 : i);
+      }));
+      if (isLocal) { await api.installLocal(local!.token); setPw(""); setInstalledLocal(true); setLocal(null); setStep(LOCAL_STEPS.length); setPhase("done"); }
       else { await api.install(); setStep(4); setPhase("open"); }
     } catch (e) { fail(e); }
   };
   const sendCode = async (cancel = false) => { const c = cancel ? "" : code.trim(); setCode(""); setTfa(false); await api.sendTwoFactor(c).catch(() => {}); };
+  const tfaAct = async (action: "devices" | "resend" | "sms", numberId?: number) => { setCode(""); setTfa(false); await api.sendTwoFactorAction({ action, numberId }).catch(() => {}); };
   const finish = async () => {
     setWarn(""); setPhase("finishing"); setStep(5);
     try {
@@ -79,7 +97,7 @@ export default function App() {
       const end = Date.now() + 90000;
       while (Date.now() < end) {
         const s = (await api.handoffStatus()).status;
-        if (s === "consumed") { clearSecrets(); setPhase("done"); setStep(STEPS.length); return; }
+        if (s === "consumed") { clearSecrets(); void api.signOut().catch(() => {}); setAccount(null); setPhase("done"); setStep(STEPS.length); return; }
         if (s === "rejected") { setWarn(t("rejected")); setPhase("open"); return; }
         await new Promise((r) => setTimeout(r, 2000));
       }
@@ -110,18 +128,21 @@ export default function App() {
       <section className="right">
         {phase === "open" || phase === "finishing" || phase === "done" ? (
           <div className="card done"><h2>{installedLocal ? t("appInstalled") : phase === "done" ? t("setupDone") : t("doneTitle")}</h2>
-            {installedLocal ? (<div className="status ok"><span className="dot"><Ico d="M5 12l5 5L20 7" /></span>{t("appInstalled")}</div>) : phase !== "done" ? (<><p className="muted">{t("doneSub")}</p>{warn && <div className="err" role="alert">{warn}</div>}<button className="primary" onClick={finish} disabled={phase === "finishing"}>{phase === "finishing" ? t("waiting") : t("finishBtn")}</button></>)
+            {installedLocal ? (<div className="status ok"><span className="dot"><Ico d="M5 12l5 5L20 7" /></span>{t("appInstalled")}</div>) : phase !== "done" ? (<><p className="muted">{t("doneSub")}</p>{warn && <div className="err" role="alert">{warn} <button className="link" onClick={() => { setDetail(warn); void api.copyDetails(warn).then(() => setCopied(true)).catch(() => {}); }}>{t("copyDetails")}</button></div>}<button className="primary" onClick={finish} disabled={phase === "finishing"}>{phase === "finishing" ? t("waiting") : t("finishBtn")}</button></>)
               : (<div className="status ok"><span className="dot"><Ico d="M5 12l5 5L20 7" /></span>{t("done")}</div>)}</div>
         ) : (<>
           <div className="seg" role="radiogroup">{(["latest", "local"] as const).map((s) => (<button key={s} type="button" role="radio" aria-checked={source === s} className={source === s ? "on" : ""} disabled={busy} onClick={() => setSource(s)}>{t(s === "latest" ? "srcLatest" : "srcLocal")}</button>))}</div>
           {isLocal && (<div className="card pair"><div className="pico"><Ico d="M7 3h7l5 5v13H7zM14 3v5h5" /></div><div className="ptext"><b>{local ? local.name || t("ipaChosen") : t("ipaNone")}</b><span className="muted">{t("ipaNote")}</span></div><button className="ghost" onClick={pickIpa} disabled={busy}>{t("choose")}</button></div>)}
-          <button className="primary" onClick={start} disabled={busy}><Ico d="M12 4v11m0 0l-4-4m4 4l4-4M5 20h14" />{t(isLocal ? "installIpa" : "install")}</button>
+          {account ? (<div className="card acct"><div className="pico"><Ico d="M5 12l5 5L20 7" /></div><div className="ptext"><span className="muted">{t("signedAs")}</span><b>{account}</b></div><button className="ghost" onClick={signOut} disabled={busy}>{t("signOut")}</button></div>) : (<>
           <label className="field"><Ico d="M4 6h16v12H4zM4 7l8 6 8-6" /><input type="email" autoComplete="off" spellCheck={false} placeholder={t("appleId")} value={email} onChange={(e) => setEmail(e.target.value)} disabled={busy} /></label>
-          <label className="field"><Ico d="M6 11h12v9H6zM8 11V8a4 4 0 018 0v3" /><input type={showPw ? "text" : "password"} autoComplete="off" placeholder={t("password")} value={pw} onChange={(e) => setPw(e.target.value)} disabled={busy} />
+          <label className="field"><Ico d="M6 11h12v9H6zM8 11V8a4 4 0 018 0v3" /><input type={showPw ? "text" : "password"} autoComplete="off" placeholder={t("password")} value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => e.key === "Enter" && signIn()} disabled={busy} />
             <button type="button" className="eye" aria-label={showPw ? t("hide") : t("show")} onClick={() => setShowPw(!showPw)}><Ico d={showPw ? "M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 9a3 3 0 100 6 3 3 0 000-6" : "M3 3l18 18M10 6.2A9 9 0 0112 6c6 0 10 6 10 6a17 17 0 01-3 3.5M6.5 7.5A17 17 0 002 12s4 7 10 7a9 9 0 004-1"} /></button></label>
-          <p className="hint">{t("privacy")}</p>
+          <button className="primary" onClick={signIn} disabled={busy || !email || !pw}>{signing ? t("signingIn") : t("signIn")}</button>
+          <p className="hint">{t("privacy")}</p></>)}
+          <button className="primary" onClick={start} disabled={busy || !account || signing}><Ico d="M12 4v11m0 0l-4-4m4 4l4-4M5 20h14" />{t(isLocal ? "installIpa" : "install")}</button>
+          {!account && <p className="muted">{t("signFirst")}</p>}
         </>)}
-        {phase === "error" && <div className="err" role="alert">{msg} <button className="link" onClick={() => setPhase("idle")}>{t("tryAgain")}</button></div>}
+        {phase === "error" && <div className="err" role="alert">{msg} <button className="link" onClick={() => setPhase("idle")}>{t("tryAgain")}</button> <button className="link" onClick={copyErr}>{copied ? t("copied") : t("copyDetails")}</button>{detailShow && <pre className="det">{detailShow}</pre>}</div>}
         <div className="card pair"><div className="pico"><Ico d="M7 3h7l5 5v13H7zM14 3v5h5" /></div>
           <div className="ptext"><b>{t("pairTitle")}</b><span className="errtxt warnc">{t("pairWarn")}</span><span className="muted">{t("pairSub")}</span>{pairMsg && <span className="errtxt">{pairMsg}</span>}</div>
           <button className="ghost" onClick={exportPair} disabled={!sel || busy}>{t("export")}</button></div>
@@ -135,7 +156,8 @@ export default function App() {
     {certs && (<div className="overlay"><div className="modal card" role="dialog" aria-modal="true"><h3>{t("certTitle")}</h3><p className="muted">{t("certSub")}</p>
       <div className="certs">{certs.map((c: any) => { const id: string = c.serialNumber; const on = pick.includes(id); return (<label key={id} className="cert"><input type="checkbox" checked={on} onChange={() => setPick(on ? pick.filter((x) => x !== id) : [...pick, id])} /><span>{c.name ?? c.machineName ?? id}<small className="muted">{id}</small></span></label>); })}</div>
       <div className="row"><button className="ghost" onClick={() => { api.answerCerts(null); setCerts(null); }}>{t("cancel")}</button><button className="primary sm" disabled={!pick.length} onClick={() => { api.answerCerts(pick); setCerts(null); }}>{t("confirm")}</button></div></div></div>)}
-    {tfa && (<div className="overlay"><div className="modal card" role="dialog" aria-modal="true"><h3>{t("twoTitle")}</h3><p className="muted">{t("twoSub")}</p>
+    {tfa && (<div className="overlay"><div className="modal card" role="dialog" aria-modal="true"><h3>{t("twoTitle")}</h3><p className="muted">{t("twoSub")}</p>{tfaP.lastError && <div className="err" role="alert">{tfaP.lastError}</div>}
+      {(tfaP.unknown || tfaP.sms) && (<div className="methods"><button className="ghost" onClick={() => tfaAct("devices")}>{t("tfaDevices")}</button>{(tfaP.numbers ?? []).map((n) => (<button key={n.id} className="ghost" onClick={() => tfaAct("sms", n.id)}>{t("tfaSms")} {"•• " + (n.lastTwoDigits ?? "")}</button>))}<button className="ghost" onClick={() => tfaAct("resend")}>{t("tfaResend")}</button></div>)}
       <input className="code" inputMode="numeric" maxLength={6} autoFocus value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} onKeyDown={(e) => e.key === "Enter" && code.length === 6 && sendCode()} />
       <div className="row"><button className="ghost" onClick={() => sendCode(true)}>{t("cancel")}</button><button className="primary sm" disabled={code.length !== 6} onClick={() => sendCode()}>{t("confirm")}</button></div></div></div>)}
   </div>);

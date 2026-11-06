@@ -1,5 +1,6 @@
 mod account;
 mod device;
+mod diagnostics;
 mod error;
 mod handoff;
 mod local_ipa;
@@ -23,7 +24,7 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Deliberately NO tracing subscriber, file logger or frontend log forwarding.
+    // Dependency tracing stays disabled; only our sanitized diagnostic records reach disk.
     // Dependencies can log authentication bodies at debug/trace. Disable all levels.
     let _ = tracing::subscriber::set_global_default(tracing::subscriber::NoSubscriber::default());
     let _ = isideload::init(); // Install library error-format hooks, never log payloads.
@@ -42,6 +43,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             login_new,
+            diagnostics::copy_error_details,
             invalidate_account,
             logged_in_as,
             list_devices,

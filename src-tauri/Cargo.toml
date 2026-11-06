@@ -1,6 +1,6 @@
 [package]
 name = "mirsa-windows"
-version = "0.1.0"
+version = "0.1.1"
 description = "Mirsa USB installer for Windows"
 authors = ["Alaa", "nab138 (upstream backend)"]
 edition = "2024"

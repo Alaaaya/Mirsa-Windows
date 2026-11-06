@@ -403,6 +403,14 @@ pub async fn install_mirsa_operation(
         .busy
         .try_lock()
         .map_err(|_| AppError::Misc("Another setup operation is running".into()))?;
+    // Enforce sign-in server-side before network download or consuming a local selection.
+    if sideloader_state
+        .lock()
+        .map_err(|_| AppError::NotLoggedIn)?
+        .is_none()
+    {
+        return Err(AppError::NotLoggedIn);
+    }
     let op = Operation::new("install_mirsa".into(), &window);
     op.start("download")?;
     let release = op.fail_if_err("download", get_mirsa_release().await)?;
@@ -450,7 +458,11 @@ pub async fn install_mirsa_operation(
     let mut account = SideloaderGuard::take(&sideloader_state)?;
     let team = op.fail_if_err(
         "install",
-        account.get_mut().get_team().await.map_err(AppError::from),
+        account
+            .get_mut()
+            .get_team()
+            .await
+            .map_err(|e| AppError::from_report_at(e, "install")),
     )?;
     let installed_id = format!("{}.{}", release.bundle_identifier, team.team_id);
     op.fail_if_err(
@@ -465,7 +477,7 @@ pub async fn install_mirsa_operation(
                 None,
             )
             .await
-            .map_err(AppError::from),
+            .map_err(|e| AppError::from_report_at(e, "sign_install")),
     )?;
     op.move_on("install", "pairing")?;
     let mut proxy = InstallationProxyClient::connect(&provider)
