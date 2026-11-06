@@ -29,6 +29,8 @@ export const api = {
   onTwoFactor: (cb: () => void) => inTauri ? listen("2fa-required", cb) : Promise.resolve(() => {}),
   async sendTwoFactor(code: string) { if (inTauri) { const { emit } = await import("@tauri-apps/api/event"); await emit("2fa-recieved", code); } },
   install: () => inTauri ? inv<{ bundleIdentifier: string; version: string; requiresFirstOpen: boolean }>("install_mirsa_operation") : Promise.reject("Desktop backend not available in browser preview"),
+  async chooseLocalIpa(): Promise<{ token: string; name: string } | null> { return (await inv<{ token: string; name: string } | null>("choose_local_ipa")) ?? null; },
+  installLocal: (token: string) => inv<void>("install_local_ipa_operation", { token }),
   finishSetup: (email: string, password: string) => inv<{ status: string; sessionId: string }>("finish_mirsa_setup", { email, password }),
   handoffStatus: () => inv<{ status: "waiting" | "consumed" | "rejected" }>("mirsa_handoff_status"),
   onMaxCerts: (cb: (c: any[]) => void) => inTauri ? listen<any[]>("max-certs-reached", cb) : Promise.resolve(() => {}),
