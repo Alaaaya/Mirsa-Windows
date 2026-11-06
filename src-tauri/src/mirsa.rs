@@ -1,4 +1,4 @@
-//! Official-release-only installer. No user URL/path execution or archive extraction here.
+//! Pinned official installer and shared strict IPA validation. No arbitrary URL execution.
 use crate::{
     device::{DeviceInfoMutex, get_provider},
     error::AppError,
@@ -145,40 +145,130 @@ pub async fn get_mirsa_release() -> Result<MirsaRelease, AppError> {
     Ok(release)
 }
 fn bad_archive() -> AppError {
-    AppError::Download("The Mirsa IPA did not pass identity and archive safety checks".into())
+    AppError::Download("The IPA did not pass identity and archive safety checks".into())
+}
+#[derive(Clone)]
+pub struct IpaIdentity {
+    pub bundle_identifier: String,
+    pub version: String,
 }
 pub fn validate_ipa(path: &Path, bundle: &str) -> Result<(), AppError> {
+    let identity = inspect_ipa(path)?;
+    if identity.bundle_identifier != bundle {
+        return Err(bad_archive());
+    }
+    Ok(())
+}
+fn safe_component(c: &str) -> bool {
+    let stem = c.split('.').next().unwrap_or("").to_ascii_uppercase();
+    !c.is_empty()
+        && c != "."
+        && c != ".."
+        && !c.ends_with(['.', ' '])
+        && !c.contains(['<', '>', '"', '|', '?', '*'])
+        && !matches!(
+            stem.as_str(),
+            "CON"
+                | "PRN"
+                | "AUX"
+                | "NUL"
+                | "COM1"
+                | "COM2"
+                | "COM3"
+                | "COM4"
+                | "COM5"
+                | "COM6"
+                | "COM7"
+                | "COM8"
+                | "COM9"
+                | "LPT1"
+                | "LPT2"
+                | "LPT3"
+                | "LPT4"
+                | "LPT5"
+                | "LPT6"
+                | "LPT7"
+                | "LPT8"
+                | "LPT9"
+        )
+}
+fn check_macho(bytes: &[u8]) -> Result<(), AppError> {
+    use goblin::mach::{Mach, SingleArch, load_command::CommandVariant};
+    fn thin(m: &goblin::mach::MachO<'_>) -> Result<(), AppError> {
+        for command in &m.load_commands {
+            let encrypted = match command.command {
+                CommandVariant::EncryptionInfo32(ref c) => c.cryptid != 0,
+                CommandVariant::EncryptionInfo64(ref c) => c.cryptid != 0,
+                _ => false,
+            };
+            if encrypted {
+                return Err(AppError::Misc("This IPA contains an encrypted App Store binary and cannot be signed. Choose an unencrypted IPA you are authorized to install.".into()));
+            }
+        }
+        Ok(())
+    }
+    match Mach::parse(bytes).map_err(|_| bad_archive())? {
+        Mach::Binary(m) => thin(&m),
+        Mach::Fat(fat) => {
+            let arches = fat.arches().map_err(|_| bad_archive())?;
+            if arches.is_empty() || arches.len() > 32 {
+                return Err(bad_archive());
+            }
+            for i in 0..arches.len() {
+                match fat.get(i).map_err(|_| bad_archive())? {
+                    SingleArch::MachO(m) => thin(&m)?,
+                    _ => return Err(bad_archive()),
+                }
+            }
+            Ok(())
+        }
+    }
+}
+pub fn inspect_ipa(path: &Path) -> Result<IpaIdentity, AppError> {
     let file = std::fs::File::open(path).map_err(|_| bad_archive())?;
+    if file.metadata().map_err(|_| bad_archive())?.len() > MAX_IPA {
+        return Err(bad_archive());
+    }
     let mut archive = zip::ZipArchive::new(file).map_err(|_| bad_archive())?;
-    if archive.len() > 20_000 {
+    if archive.len() == 0 || archive.len() > 20_000 {
         return Err(bad_archive());
     }
     let mut seen = HashSet::new();
+    let mut files = HashSet::new();
+    let mut paths = Vec::new();
     let mut total = 0u64;
     let mut main = None;
+    let mut app_roots = HashSet::new();
     for index in 0..archive.len() {
         let entry = archive.by_index(index).map_err(|_| bad_archive())?;
         let name = entry.name();
+        let trimmed = name.trim_end_matches('/');
         if name.is_empty()
             || name.starts_with('/')
             || name.contains(['\\', ':'])
             || name.chars().any(|c| c.is_control())
-            || name
-                .split('/')
-                .any(|c| c == ".." || c == "." || c.ends_with('.') || c.ends_with(' '))
+            || name.ends_with("//")
+            || !trimmed.split('/').all(safe_component)
             || entry.enclosed_name().is_none()
-            || !seen.insert(name.to_string())
-            || entry
-                .unix_mode()
-                .is_some_and(|mode| mode & 0o170000 == 0o120000)
+            || !seen.insert(trimmed.to_lowercase())
+            || entry.unix_mode().is_some_and(|mode| {
+                mode & 0o170000 != 0 && !matches!(mode & 0o170000, 0o100000 | 0o040000)
+            })
         {
             return Err(bad_archive());
         }
+        if !entry.is_dir() {
+            files.insert(trimmed.to_lowercase());
+        }
+        paths.push(trimmed.to_lowercase());
         total = total.checked_add(entry.size()).ok_or_else(bad_archive)?;
         if total > 512 * 1024 * 1024 || entry.size() > 128 * 1024 * 1024 {
             return Err(bad_archive());
         }
-        let parts: Vec<_> = name.split('/').collect();
+        let parts: Vec<_> = trimmed.split('/').collect();
+        if parts.len() >= 2 && parts[0] == "Payload" && parts[1].ends_with(".app") {
+            app_roots.insert(parts[1].to_string());
+        }
         if parts.len() == 3
             && parts[0] == "Payload"
             && parts[1].ends_with(".app")
@@ -190,24 +280,112 @@ pub fn validate_ipa(path: &Path, bundle: &str) -> Result<(), AppError> {
             main = Some(index);
         }
     }
+    if app_roots.len() != 1 {
+        return Err(bad_archive());
+    }
+    for path in paths {
+        for (offset, _) in path.match_indices('/') {
+            if files.contains(&path[..offset]) {
+                return Err(bad_archive());
+            }
+        }
+    }
     let index = main.ok_or_else(bad_archive)?;
-    let entry = archive.by_index(index).map_err(|_| bad_archive())?;
+    let mut entry = archive.by_index(index).map_err(|_| bad_archive())?;
+    let prefix = entry
+        .name()
+        .rsplit_once('/')
+        .ok_or_else(bad_archive)?
+        .0
+        .to_string();
     let mut data = Vec::new();
     entry
+        .by_ref()
         .take(1024 * 1024 + 1)
         .read_to_end(&mut data)
         .map_err(|_| bad_archive())?;
+    if data.len() > 1024 * 1024 {
+        return Err(bad_archive());
+    }
     let info = plist::Value::from_reader(Cursor::new(data)).map_err(|_| bad_archive())?;
-    if info
-        .as_dictionary()
-        .and_then(|d| d.get("CFBundleIdentifier"))
+    let dict = info.as_dictionary().ok_or_else(bad_archive)?;
+    let bundle = dict
+        .get("CFBundleIdentifier")
         .and_then(|v| v.as_string())
-        != Some(bundle)
+        .ok_or_else(bad_archive)?;
+    if bundle.is_empty()
+        || bundle.len() > 255
+        || !bundle
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'.' || c == b'-')
     {
         return Err(bad_archive());
     }
-    Ok(())
+    let executable = dict
+        .get("CFBundleExecutable")
+        .and_then(|v| v.as_string())
+        .ok_or_else(bad_archive)?;
+    if !safe_component(executable) || executable.contains(['/', '\\', ':']) {
+        return Err(bad_archive());
+    }
+    let executable_path = format!("{}/{}", prefix, executable);
+    let identity = IpaIdentity {
+        bundle_identifier: bundle.to_string(),
+        version: dict
+            .get("CFBundleShortVersionString")
+            .and_then(|v| v.as_string())
+            .unwrap_or("Unknown")
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(80)
+            .collect(),
+    };
+    drop(entry);
+    let mut main_checked = false;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(|_| bad_archive())?;
+        if entry.is_dir() || entry.size() < 4 {
+            continue;
+        }
+        let mut magic = [0u8; 4];
+        entry.read_exact(&mut magic).map_err(|_| bad_archive())?;
+        let macho = matches!(
+            magic,
+            [0xfe, 0xed, 0xfa, 0xce]
+                | [0xce, 0xfa, 0xed, 0xfe]
+                | [0xfe, 0xed, 0xfa, 0xcf]
+                | [0xcf, 0xfa, 0xed, 0xfe]
+                | [0xca, 0xfe, 0xba, 0xbe]
+                | [0xbe, 0xba, 0xfe, 0xca]
+                | [0xca, 0xfe, 0xba, 0xbf]
+                | [0xbf, 0xba, 0xfe, 0xca]
+        );
+        let is_main = entry.name() == executable_path;
+        if is_main && !macho {
+            return Err(bad_archive());
+        }
+        if macho {
+            let expected = entry.size();
+            let mut bytes = magic.to_vec();
+            entry
+                .take(128 * 1024 * 1024 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|_| bad_archive())?;
+            if bytes.len() as u64 != expected || bytes.len() > 128 * 1024 * 1024 {
+                return Err(bad_archive());
+            }
+            check_macho(&bytes)?;
+            if is_main {
+                main_checked = true;
+            }
+        }
+    }
+    if !main_checked {
+        return Err(bad_archive());
+    }
+    Ok(identity)
 }
+
 struct TempIpa(PathBuf);
 impl Drop for TempIpa {
     fn drop(&mut self) {
@@ -351,5 +529,90 @@ mod tests {
             )
             .unwrap()
         ));
+    }
+    fn macho(encrypted: bool) -> Vec<u8> {
+        let words: [u32; 14] = [
+            0xfeedfacf,
+            0x0100000c,
+            0,
+            2,
+            1,
+            24,
+            0,
+            0,
+            0x2c,
+            24,
+            0,
+            0,
+            u32::from(encrypted),
+            0,
+        ];
+        words.into_iter().flat_map(u32::to_le_bytes).collect()
+    }
+    fn fixture(extra: Option<(&str, &[u8])>, encrypted: bool) -> TempIpa {
+        use std::io::Write;
+        let path =
+            TempIpa(std::env::temp_dir().join(format!("Mirsa-test-{}.ipa", uuid::Uuid::new_v4())));
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path.0)
+            .unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("Payload/Test.app/Info.plist", options)
+            .unwrap();
+        zip.write_all(br#"<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.example.test</string><key>CFBundleExecutable</key><string>Test</string><key>CFBundleShortVersionString</key><string>1.2</string></dict></plist>"#).unwrap();
+        zip.start_file("Payload/Test.app/Test", options).unwrap();
+        zip.write_all(&macho(encrypted)).unwrap();
+        if let Some((name, bytes)) = extra {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+        path
+    }
+    #[test]
+    fn local_identity_and_official_identity_are_distinct() {
+        let file = fixture(None, false);
+        let identity = inspect_ipa(&file.0).unwrap();
+        assert_eq!(identity.bundle_identifier, "com.example.test");
+        assert_eq!(identity.version, "1.2");
+        assert!(validate_ipa(&file.0, BUNDLE).is_err());
+        assert!(validate_ipa(&file.0, "com.example.test").is_ok());
+    }
+    #[test]
+    fn encrypted_main_and_nested_binaries_rejected() {
+        let main = fixture(None, true);
+        assert!(inspect_ipa(&main.0).is_err());
+        let encrypted = macho(true);
+        let nested = fixture(
+            Some(("Payload/Test.app/Frameworks/Hidden.dylib", &encrypted)),
+            false,
+        );
+        assert!(inspect_ipa(&nested.0).is_err());
+    }
+    #[test]
+    fn archive_path_ambiguity_rejected() {
+        for path in [
+            "../escape",
+            "Payload/Test.app/../escape",
+            "Payload/Test.app/CON.txt",
+            "Payload/Test.app/test",
+            "Payload/Test.app/INFO.PLIST",
+            "Payload/Test.app/File.",
+            "Payload/Test.app//file",
+            "Payload/Test.app/Thing:stream",
+            "Payload/Other.app/file",
+        ] {
+            let file = fixture(Some((path, b"bad")), false);
+            assert!(inspect_ipa(&file.0).is_err(), "accepted {}", path);
+        }
+    }
+    #[test]
+    fn malformed_binary_rejected() {
+        assert!(check_macho(&[0u8; 32]).is_err());
+        assert!(check_macho(&macho(false)).is_ok());
+        assert!(check_macho(&macho(true)).is_err());
     }
 }

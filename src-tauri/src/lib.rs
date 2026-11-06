@@ -2,6 +2,7 @@ mod account;
 mod device;
 mod error;
 mod handoff;
+mod local_ipa;
 mod mirsa;
 mod operation;
 mod pairing;
@@ -13,6 +14,7 @@ use device::{
     DeviceInfoMutex, PairingCancelToken, cancel_pairing, list_devices, set_selected_device,
 };
 use handoff::{finish_mirsa_setup, mirsa_handoff_status};
+use local_ipa::{LocalIpaState, choose_local_ipa, install_local_ipa_operation};
 use mirsa::{InstallerState, get_mirsa_release, install_mirsa_operation};
 use pairing::export_pairing_cmd;
 use secure_storage::keyring_available;
@@ -35,6 +37,7 @@ pub fn run() {
             app.manage(SideloaderMutex::new(None));
             app.manage(PairingCancelToken::new(None));
             app.manage(InstallerState::default());
+            app.manage(LocalIpaState::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -46,6 +49,8 @@ pub fn run() {
             cancel_pairing,
             export_pairing_cmd,
             keyring_available,
+            choose_local_ipa,
+            install_local_ipa_operation,
             get_mirsa_release,
             install_mirsa_operation,
             finish_mirsa_setup,

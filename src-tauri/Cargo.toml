@@ -51,3 +51,5 @@ aes-gcm = "=0.10.3"
 rand_core = { version = "=0.6.4", features = ["getrandom"] }
 zeroize = { version = "1", features = ["derive"] }
 zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
+
+goblin = "=0.10.3"
