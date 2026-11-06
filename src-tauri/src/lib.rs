@@ -24,6 +24,7 @@ pub fn run() {
     // Deliberately NO tracing subscriber, file logger or frontend log forwarding.
     // Dependencies can log authentication bodies at debug/trace. Disable all levels.
     let _ = tracing::subscriber::set_global_default(tracing::subscriber::NoSubscriber::default());
+    let _ = isideload::init(); // Install library error-format hooks, never log payloads.
     std::panic::set_hook(Box::new(|_| {})); // Never print secret-bearing panic payloads.
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
