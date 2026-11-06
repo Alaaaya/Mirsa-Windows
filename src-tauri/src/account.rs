@@ -1,3 +1,4 @@
+use crate::diagnostics;
 use futures::FutureExt;
 use isideload::{
     anisette::{AnisetteClientInfo, remote_v3::RemoteV3AnisetteProvider},
@@ -12,7 +13,24 @@ use isideload::{
 };
 use rootcause::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+pub static AUTH_EPOCH: AtomicU64 = AtomicU64::new(0);
+struct OnDrop<F: FnOnce()>(Option<F>);
+impl<F: FnOnce()> Drop for OnDrop<F> {
+    fn drop(&mut self) {
+        if let Some(f) = self.0.take() {
+            f();
+        }
+    }
+}
+static LOGIN_BUSY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub const ANISETTE_SERVERS: &[&str] = &[
+    "ani.iloader.app",
+    "mac-ani.jkcoxson.com",
+    "new.ani.sidestore.io",
+    "ani.sidestore.io",
+];
 use tauri::{AppHandle, Emitter, Listener, State, Window};
 
 use crate::{
@@ -29,16 +47,42 @@ pub async fn login_new(
     anisette_server: String,
     save_credentials: bool,
 ) -> Result<(), AppError> {
+    let _busy = LOGIN_BUSY
+        .try_lock()
+        .map_err(|_| AppError::Auth("Sign-in already running".into()))?;
     let password = zeroize::Zeroizing::new(password);
+    diagnostics::register_secret(&email);
+    diagnostics::register_secret(&email.to_lowercase());
+    diagnostics::register_secret(&password);
+    let epoch = {
+        let mut state = sideloader_state.lock().map_err(|_| AppError::NotLoggedIn)?;
+        *state = None;
+        AUTH_EPOCH.fetch_add(1, Ordering::SeqCst) + 1
+    };
+    diagnostics::stage("account_validation");
     if email.trim().is_empty() || email.len() > 320 || password.is_empty() || password.len() > 4096
     {
         return Err(AppError::Auth(
-            "Enter a valid Apple Account email and password".into(),
+            "Enter a valid Apple Account and non-empty credentials".into(),
         ));
     }
-    let account = login(&handle, window, &email, &password, anisette_server).await?;
+    let account = tokio::time::timeout(
+        Duration::from_secs(300),
+        login(&handle, window, &email, &password, anisette_server),
+    )
+    .await
+    .map_err(|_| {
+        AppError::from_report_at(
+            rootcause::report!("Authentication timed out"),
+            "apple_login",
+        )
+    })??;
     let mut sideloader_guard = sideloader_state.lock().unwrap();
+    if AUTH_EPOCH.load(Ordering::SeqCst) != epoch {
+        return Err(AppError::Canceled("Sign-in".into()));
+    }
     *sideloader_guard = Some(account);
+    diagnostics::stage("signed_in");
 
     let _ = save_credentials; // Password persistence is deliberately disabled.
     Ok(())
@@ -55,7 +99,9 @@ pub fn logged_in_as(sideloader_state: State<'_, SideloaderMutex>) -> Option<Stri
 #[tauri::command]
 pub fn invalidate_account(sideloader_state: State<'_, SideloaderMutex>) {
     let mut sideloader_guard = sideloader_state.lock().unwrap();
+    AUTH_EPOCH.fetch_add(1, Ordering::SeqCst);
     *sideloader_guard = None;
+    diagnostics::stage("signed_out");
 }
 
 async fn login(
@@ -71,6 +117,7 @@ async fn login(
             let window_clone = window_clone.clone();
 
             async move {
+                diagnostics::stage("two_factor");
                 let (tx, rx) = tokio::sync::oneshot::channel::<String>();
                 let tx = std::sync::Mutex::new(Some(tx));
                 let handler_id = window_clone.listen("2fa-recieved", move |event| {
@@ -80,6 +127,11 @@ async fn login(
                         }
                     }
                 });
+                let cleanup_window = window_clone.clone();
+                let _cleanup = OnDrop(Some(move || cleanup_window.unlisten(handler_id)));
+                let allowed_numbers: Vec<u32> = params.numbers.iter().map(|n| n.id).collect();
+                let mut params = params;
+                params.last_error = params.last_error.map(|text| diagnostics::sanitize(&text));
                 if window_clone.emit("2fa-required", params).is_err() {
                     window_clone.unlisten(handler_id);
                     rootcause::bail!("Could not request verification code");
@@ -89,9 +141,40 @@ async fn login(
                 let raw = result
                     .context("Verification code timed out")?
                     .context("Verification canceled")?;
+                // Existing string-code event stays compatible. Structured actions additionally
+                // let the UI select a method when Apple reports unknown 2FA requirements.
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+                    if let Some(action) = value.get("action").and_then(|v| v.as_str()) {
+                        return match action {
+                            "cancel" => Ok(TwoFactorCallbackResponse::Abort),
+                            "devices" => Ok(TwoFactorCallbackResponse::SendToDevices),
+                            "resend" => Ok(TwoFactorCallbackResponse::ResendCode),
+                            "sms" => {
+                                let id = value
+                                    .get("numberId")
+                                    .and_then(|v| v.as_u64())
+                                    .and_then(|n| u32::try_from(n).ok())
+                                    .filter(|n| allowed_numbers.contains(n));
+                                match id {
+                                    Some(n) => Ok(TwoFactorCallbackResponse::SendSms(n)),
+                                    None => {
+                                        rootcause::bail!("Invalid verification method");
+                                    }
+                                }
+                            }
+                            _ => {
+                                rootcause::bail!("Invalid verification method");
+                            }
+                        };
+                    }
+                }
                 let code = serde_json::from_str::<String>(&raw).unwrap_or(raw);
                 let code = code.trim().to_string();
-                if code.is_empty() || code.len() > 8 || !code.bytes().all(|b| b.is_ascii_digit()) {
+                diagnostics::register_secret(&code);
+                if code.is_empty() {
+                    return Ok(TwoFactorCallbackResponse::Abort);
+                }
+                if code.len() > 8 || !code.bytes().all(|b| b.is_ascii_digit()) {
                     rootcause::bail!("Invalid verification code");
                 }
                 Ok(TwoFactorCallbackResponse::SubmitCode(code))
@@ -100,6 +183,7 @@ async fn login(
         }
     };
 
+    diagnostics::stage("anisette_configuration");
     let anisette_url = if !anisette_server.contains("://") {
         format!("https://{}", anisette_server)
     } else {
@@ -108,7 +192,9 @@ async fn login(
     let url = reqwest::Url::parse(&anisette_url)
         .map_err(|_| AppError::Anisette("Invalid anisette server URL".into()))?;
     if url.scheme() != "https"
-        || url.host_str() != Some("ani.sidestore.io")
+        || !url
+            .host_str()
+            .is_some_and(|host| ANISETTE_SERVERS.contains(&host))
         || !url.username().is_empty()
         || url.password().is_some()
         || url.port().is_some()
@@ -117,28 +203,39 @@ async fn login(
         || url.path() != "/"
     {
         return Err(AppError::Anisette(
-            "Only the trusted HTTPS anisette server ani.sidestore.io is allowed".into(),
+            "Choose a supported trusted HTTPS anisette server".into(),
         ));
     }
 
+    diagnostics::stage("anisette_provider");
+    let provider = RemoteV3AnisetteProvider::default()
+        .map_err(|e| AppError::from_report_at(e, "anisette_provider"))?
+        .set_serial_number("0".to_string())
+        .set_storage(create_sideloading_storage(app)?)
+        // just temporary while waiting for the anisette servers to start reporting this
+        .set_client_info_override(Some(AnisetteClientInfo {
+            client_info:
+                "<Mac15,7> <macOS;27.0;26A5378j> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+                    .to_string(),
+            user_agent: "akd/1.0 CFNetwork/811.5.4".to_string(),
+        }))
+        .set_url(&anisette_url);
+    let _ = diagnostics::record(
+        "anisette_provider",
+        url.host_str().unwrap_or("trusted server"),
+    );
+    diagnostics::stage("apple_login");
     let mut account = AppleAccount::builder(&email.to_lowercase())
-        .anisette_provider(
-            RemoteV3AnisetteProvider::default()?
-                .set_serial_number("0".to_string())
-                .set_storage(create_sideloading_storage(app)?)
-                // just temporary while waiting for the anisette servers to start reporting this
-                .set_client_info_override(Some(AnisetteClientInfo {
-                    client_info:
-                        "<Mac15,7> <macOS;27.0;26A5378j> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
-                            .to_string(),
-                    user_agent: "akd/1.0 CFNetwork/811.5.4".to_string(),
-                }))
-                .set_url(&anisette_url),
-        )
+        .anisette_provider(provider)
+        .err_429_retries(None)
         .login(password, Box::new(tfa_closure))
-        .await?;
+        .await
+        .map_err(|e| AppError::from_report_at(e, "apple_login"))?;
 
-    let dev_session = DeveloperSession::from_account(&mut account).await?;
+    diagnostics::stage("developer_session");
+    let dev_session = DeveloperSession::from_account(&mut account)
+        .await
+        .map_err(|e| AppError::from_report_at(e, "developer_session"))?;
 
     let max_certs_callback: MaxCertsCallbackBox =
         Box::new(move |certs: Vec<DevelopmentCertificate>| {
@@ -210,4 +307,15 @@ pub struct CertificateInfo {
     pub serial_number: Option<String>,
     pub machine_name: Option<String>,
     pub machine_id: Option<String>,
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+    #[test]
+    fn supported_hosts_are_exact_and_include_pinned_library_default() {
+        assert!(ANISETTE_SERVERS.contains(&"ani.iloader.app"));
+        assert!(!ANISETTE_SERVERS.contains(&"ani.iloader.app.evil.test"));
+        assert!(!ANISETTE_SERVERS.contains(&"localhost"));
+    }
 }

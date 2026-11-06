@@ -189,6 +189,9 @@ pub async fn finish_mirsa_setup(
     installer: State<'_, InstallerState>,
 ) -> Result<Status, AppError> {
     let password = Zeroizing::new(password);
+    crate::diagnostics::register_secret(&email);
+    crate::diagnostics::register_secret(&email.to_lowercase());
+    crate::diagnostics::register_secret(&password);
     let _busy = installer
         .busy
         .try_lock()

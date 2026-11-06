@@ -134,6 +134,14 @@ pub async fn install_local_ipa_operation(
         .busy
         .try_lock()
         .map_err(|_| AppError::Misc("Another setup operation is running".into()))?;
+    // Enforce sign-in server-side before network download or consuming a local selection.
+    if sideloader_state
+        .lock()
+        .map_err(|_| AppError::NotLoggedIn)?
+        .is_none()
+    {
+        return Err(AppError::NotLoggedIn);
+    }
     let op = Operation::new("install_local".into(), &window);
     op.start("validate")?;
     let selected = {
@@ -172,7 +180,11 @@ pub async fn install_local_ipa_operation(
     let mut account = op.fail_if_err("install", SideloaderGuard::take(&sideloader_state))?;
     let team = op.fail_if_err(
         "install",
-        account.get_mut().get_team().await.map_err(AppError::from),
+        account
+            .get_mut()
+            .get_team()
+            .await
+            .map_err(|e| AppError::from_report_at(e, "install")),
     )?;
     let signed_id = format!("{}.{}", identity.bundle_identifier, team.team_id);
     // A generic IPA may replace a previously installed Mirsa. Revoke any earlier handoff authorization.
@@ -191,7 +203,7 @@ pub async fn install_local_ipa_operation(
                 None,
             )
             .await
-            .map_err(AppError::from),
+            .map_err(|e| AppError::from_report_at(e, "sign_install")),
     )?;
     op.complete("install")?;
     Ok(LocalResult {

@@ -10,7 +10,8 @@ const en = {
  doneTitle:"Mirsa is installed", doneSub:"Installed. Setup is not finished yet: open Mirsa on your iPhone first (a compatible Mirsa build), then press the button below to finish the secure sign-in.", finishBtn:"I opened Mirsa, finish sign-in",
  pairWarn:"Sensitive: this file grants access to your iPhone. Keep it local and never share it.", setupDone:"Setup complete", waiting:"Waiting for Mirsa on iPhone...", rejected:"Mirsa rejected the sign-in request. Reopen Mirsa and try again.", timeout:"Mirsa did not confirm in time. Keep Mirsa open on the iPhone, then press the button again.", certTitle:"Certificate limit reached", certSub:"Select certificates to revoke. Nothing is revoked without your choice.", s_pairing:"Pairing",
  srcLatest:"Latest Mirsa", srcLocal:"Local IPA file", ipaNone:"No file selected", ipaChosen:"IPA selected", ipaNote:"Signed and installed with your Apple ID. No pairing file or credentials are sent to the app.", choose:"Choose IPA", installIpa:"Install IPA", needIpa:"Choose an IPA file first", appInstalled:"App installed",
- privacy:"Your password is used once for sign-in and is never saved.", demo:"Browser preview, no device backend", lang:"العربية", done:"Done",
+ privacy:"Your password stays in memory only until setup finishes. It is never saved or logged.", demo:"Browser preview, no device backend", lang:"العربية", done:"Done",
+ signIn:"Sign in", signingIn:"Signing in...", signOut:"Sign out", signedAs:"Signed in as", needSignin:"Sign in with your Apple ID first", signFirst:"Sign in to enable install.", copyDetails:"Copy details", copied:"Copied", tfaDevices:"Send to my devices", tfaSms:"Text", tfaResend:"Resend code",
 };
 const ar:typeof en = {
  install:"تثبيت Mirsa", appleId:"إيميل Apple ID", password:"كلمة السر", show:"إظهار", hide:"إخفاء",
@@ -23,7 +24,8 @@ const ar:typeof en = {
  doneTitle:"تم تثبيت Mirsa", doneSub:"خطوة أخيرة: افتح Mirsa على الآيفون أولاً، بعدين اضغط الزر لإنهاء تسجيل الدخول الآمن.", finishBtn:"فتحت Mirsa، أنهِ التسجيل",
  pairWarn:"حساس: هذا الملف يعطي وصولاً لآيفونك. خليه محلي ولا تشاركه.", setupDone:"اكتمل الإعداد", waiting:"بانتظار Mirsa على الآيفون...", rejected:"Mirsa رفض الطلب. افتح Mirsa وحاول مرة ثانية.", timeout:"Mirsa ما أكّد بالوقت. خلي Mirsa مفتوح على الآيفون واضغط الزر مرة ثانية.", certTitle:"وصلت حد الشهادات", certSub:"اختر الشهادات للإلغاء. ما يُلغى شي بدون اختيارك.", s_pairing:"الاقتران",
  srcLatest:"آخر Mirsa", srcLocal:"ملف IPA محلي", ipaNone:"ما انختار ملف", ipaChosen:"تم اختيار IPA", ipaNote:"يُوقَّع ويُثبَّت بحساب Apple ID. ما يُرسل ملف اقتران ولا بيانات دخول للتطبيق.", choose:"اختر IPA", installIpa:"تثبيت IPA", needIpa:"اختر ملف IPA أولاً", appInstalled:"تم تثبيت التطبيق",
- privacy:"كلمة السر تُستخدم مرة واحدة للدخول ولا تُحفظ أبداً.", demo:"معاينة المتصفح بدون الجهاز", lang:"English", done:"تم",
+ privacy:"كلمة السر تبقى بالذاكرة فقط لحد ما ينتهي الإعداد. ما تنحفظ ولا تنسجّل أبداً.", demo:"معاينة المتصفح بدون الجهاز", lang:"English", done:"تم",
+ signIn:"تسجيل الدخول", signingIn:"جاري الدخول...", signOut:"تسجيل الخروج", signedAs:"مسجّل الدخول باسم", needSignin:"سجّل الدخول بـ Apple ID أولاً", signFirst:"سجّل الدخول لتفعيل التثبيت.", copyDetails:"نسخ التفاصيل", copied:"تم النسخ", tfaDevices:"أرسل لأجهزتي", tfaSms:"رسالة نصية", tfaResend:"إعادة إرسال الرمز",
 };
 export const dict = { en, ar };
 export type Key = keyof typeof en;

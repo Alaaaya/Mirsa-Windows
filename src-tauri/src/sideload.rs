@@ -10,6 +10,7 @@ pub type SideloaderMutex =
 pub struct SideloaderGuard<'a> {
     state: &'a SideloaderMutex,
     sideloader: Option<Sideloader<MaxCertsCallbackBox, ExtensionsBehaviorCallbackBox>>,
+    epoch: u64,
 }
 
 impl<'a> SideloaderGuard<'a> {
@@ -19,6 +20,7 @@ impl<'a> SideloaderGuard<'a> {
         Ok(Self {
             state,
             sideloader: Some(sideloader),
+            epoch: crate::account::AUTH_EPOCH.load(std::sync::atomic::Ordering::SeqCst),
         })
     }
 
@@ -34,6 +36,8 @@ impl<'a> SideloaderGuard<'a> {
 impl Drop for SideloaderGuard<'_> {
     fn drop(&mut self) {
         let mut guard = self.state.lock().unwrap();
-        *guard = self.sideloader.take();
+        if self.epoch == crate::account::AUTH_EPOCH.load(std::sync::atomic::Ordering::SeqCst) {
+            *guard = self.sideloader.take();
+        }
     }
 }
