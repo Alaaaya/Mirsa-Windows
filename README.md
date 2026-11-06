@@ -20,8 +20,12 @@ The app is unsigned for Windows SmartScreen unless the owner separately arranges
 
 ## Development
 
-Install Node.js 22, stable Rust, Windows C++ build tools, Perl and Make. Then run `npm ci` and `npm run tauri build -- --bundles nsis`.
+Install Node.js 22, stable Rust, Windows C++ build tools, Perl and Make. Then run `npm ci` and `npm run tauri build -- --bundles nsis,msi`.
 
-The Windows validation workflow builds an EXE installer and uploads it as an Actions artifact. It does not create a release. Real-device installation and Apple authentication must be tested separately, not inferred from a successful build.
+The Windows validation workflow builds NSIS and MSI installers, packages a portable ZIP with mirsa.exe and any build-produced DLLs, verifies embedded Mirsa icons and MSI metadata, and uploads checksummed Actions artifacts. Release publication is a separate authorized step.
+
+The portable ZIP needs all its files extracted before running mirsa.exe. WebView2 Runtime and Apple device support are system prerequisites. Frontend assets are embedded. Portable settings still use the normal Windows app-data and credential locations.
+
+All three distributions are unsigned. Smart App Control or other Windows protections may block the MSI, NSIS installer, or portable executable. A different package format does not guarantee compatibility, and this release does not disable or bypass security controls. Real-device installation and Apple authentication must be tested separately, not inferred from a successful build.
 
 See THIRD_PARTY_NOTICES.md for attribution. This project is not affiliated with Apple or the maintainers of its upstream libraries.
