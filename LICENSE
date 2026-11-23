@@ -1,15 +1,26 @@
+Mirsa License
+
 Copyright (c) 2025-2026 Mirsa. All rights reserved.
 
-This source code and all associated files are proprietary and confidential
-to Mirsa.
+Permission is granted to view, use, copy, and modify this software, and to
+distribute copies or modified versions, provided that all of the following
+conditions are met:
 
-The code is made visible for viewing only. No permission is granted to copy,
-modify, merge, publish, distribute, sublicense, sell, or otherwise use any
-part of this software, in source or binary form, without prior written
-permission from the copyright holder.
+1. Attribution. Any project, app, website, or product that uses this
+   software or any part of it must clearly credit Mirsa, in a place where
+   users can see it (for example an About screen, credits page, or the
+   project README), with the text "Based on Mirsa" and a link to
+   https://github.com/Alaaaya.
 
-Earlier versions published under the MIT License remain available under that
-license for copies obtained before this change. All later versions are
-governed exclusively by this notice.
+2. Notice. This license and the copyright notice above must be kept in all
+   copies or substantial portions of the software.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+3. No impersonation. Modified versions must not be presented as the
+   official Mirsa app, and must not use the Mirsa name or icon as their own
+   name or icon.
+
+Any use that does not meet these conditions is not permitted.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED. IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY ARISING FROM THE SOFTWARE OR ITS USE.
