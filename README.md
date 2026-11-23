@@ -12,7 +12,7 @@ Choose your connected iPhone, enter your Apple Account, and install Mirsa from i
 
 Automatic account handoff needs a compatible Mirsa build. Open Mirsa once on the phone, then use Finish setup in Windows. Mirsa generates a fresh public-key request. Windows encrypts the credentials for that request and transfers only encrypted bytes. Mirsa validates the session and expiry, stores the account in iOS Keychain, and deletes the one-time handoff. Windows only reports account setup complete after a consumption receipt.
 
-The released iOS build may not yet support this protocol. The implementation is isolated on the `kat/windows-handoff` branch of Mirsa-iOS, not merged or published. Installing today's released IPA must not be represented as verified automatic login. You can still use pairing export and finish sign-in directly on the phone.
+The released iOS build may not yet support this protocol. The implementation is isolated on a development branch of Mirsa-iOS, not merged or published. Installing today's released IPA must not be represented as verified automatic login. You can still use pairing export and finish sign-in directly on the phone.
 
 No password is intentionally written to Windows logs or settings. Credentials remain temporarily in process memory for signing and optional handoff; close the application when finished. Treat an exported pairing file as a sensitive credential. Do not share it.
 
